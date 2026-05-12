@@ -42,11 +42,11 @@ class AccountInvoiceImport(models.TransientModel):
     )
 
     @api.model
-    def parse_xml_invoice(self, xml_root, company):
+    def parse_xml_invoice(self, xml_root):
         return False
 
     @api.model
-    def parse_pdf_invoice(self, file_data, company):
+    def parse_pdf_invoice(self, file_data):
         """This method must be inherited by additional modules with
         the same kind of logic as the account_statement_import_*
         modules"""
@@ -70,15 +70,15 @@ class AccountInvoiceImport(models.TransientModel):
                     )
                     continue
                 logger.info("Start to parse XML file %s", filename)
-                parsed_inv = self.parse_xml_invoice(xml_root, company)
+                parsed_inv = self.parse_xml_invoice(xml_root)
                 if parsed_inv:
                     return parsed_inv
-        parsed_inv = self.fallback_parse_pdf_invoice(file_data, company)
+        parsed_inv = self.fallback_parse_pdf_invoice(file_data)
         if not parsed_inv:
             parsed_inv = {}
         return parsed_inv
 
-    def fallback_parse_pdf_invoice(self, file_data, company):
+    def fallback_parse_pdf_invoice(self, file_data):
         """Designed to be inherited by the module
         account_invoice_import_invoice2data, to be sure the invoice2data
         technique is used after the electronic invoice modules such as
@@ -159,7 +159,6 @@ class AccountInvoiceImport(models.TransientModel):
 
         # IMPORT CONFIG
         # {
-        # 'company': company recordset,  # required field
         # 'single_line': False,  # boolean
         # 'analytic_distribution': Analytic distribution,
         # 'account': Account recordset,
@@ -243,7 +242,6 @@ class AccountInvoiceImport(models.TransientModel):
             journal = self.env["business.document.import"]._match_journal(
                 parsed_inv["journal"],
                 parsed_inv["chatter_msg"],
-                company=import_config["company"],
                 raise_exception=False,
             )
             if (
@@ -278,7 +276,6 @@ class AccountInvoiceImport(models.TransientModel):
                 journal_type = "purchase"
             journal = self.env["account.journal"].search(
                 [
-                    ("company_id", "=", import_config["company"].id),
                     ("type", "=", journal_type),
                 ],
                 limit=1,
@@ -287,7 +284,7 @@ class AccountInvoiceImport(models.TransientModel):
                 raise UserError(
                     _(
                         "No journal with type %(journal_type)s in company %(company)s.",
-                        company=import_config["company"].display_name,
+                        company=self.env.company.display_name,
                         journal_type=journal._fields["type"].convert_to_export(
                             journal_type, journal
                         ),
@@ -298,11 +295,9 @@ class AccountInvoiceImport(models.TransientModel):
     @api.model
     def _prepare_create_invoice_vals(self, parsed_inv, import_config):
         assert parsed_inv.get("pre-processed"), "pre-processing not done"
-        company = import_config["company"]
         bdio = self.env["business.document.import"]
         vals = {
             "move_type": parsed_inv["type"],
-            "company_id": company.id,
             "invoice_origin": parsed_inv.get("origin"),
             "ref": parsed_inv.get("invoice_number"),
             "invoice_date": parsed_inv.get("date"),
@@ -321,7 +316,7 @@ class AccountInvoiceImport(models.TransientModel):
                 raise_exception=False,
             )
         if partner:
-            partner = partner.commercial_partner_id.with_company(company.id)
+            partner = partner.commercial_partner_id
             vals["partner_id"] = partner.id
             self._set_previous_invoice(parsed_inv, import_config, partner)
             self._update_import_config_from_previous_invoice(import_config)
@@ -331,7 +326,6 @@ class AccountInvoiceImport(models.TransientModel):
             currency = bdio._match_currency(
                 parsed_inv["currency"],
                 parsed_inv["chatter_msg"],
-                import_config["company"],
                 raise_exception=False,
             )
             vals["currency_id"] = currency.id
@@ -349,7 +343,7 @@ class AccountInvoiceImport(models.TransientModel):
                 parsed_inv["iban"],
                 parsed_inv.get("bic"),
                 parsed_inv["chatter_msg"],
-                create_if_not_found=company.invoice_import_create_bank_account,
+                create_if_not_found=self.env.company.invoice_import_create_bank_account,
             )
             if partner_bank:
                 vals["partner_bank_id"] = partner_bank.id
@@ -387,7 +381,7 @@ class AccountInvoiceImport(models.TransientModel):
                 account = product._get_product_accounts()["expense"]
                 product_taxes = product.supplier_taxes_id
             taxes = product_taxes.filtered(
-                lambda tax: tax.company_id == import_config["company"]
+                lambda tax: tax.company_id == self.env.company
             )
         else:
             if import_config.get("account"):
@@ -434,7 +428,6 @@ class AccountInvoiceImport(models.TransientModel):
             if not product and import_config.get("product"):
                 product = import_config["product"]
             if product:
-                product = product.with_company(import_config["company"].id)
                 if parsed_inv["type"] in ("out_invoice", "out_refund"):
                     account = product._get_product_accounts()["income"]
                     product_taxes = product.taxes_id
@@ -442,7 +435,7 @@ class AccountInvoiceImport(models.TransientModel):
                     account = product._get_product_accounts()["expense"]
                     product_taxes = product.supplier_taxes_id
                 taxes = product_taxes.filtered(
-                    lambda tax: tax.company_id == import_config["company"]
+                    lambda tax: tax.company_id == self.env.company
                 )
             else:
                 account = import_config["account"]
@@ -455,7 +448,6 @@ class AccountInvoiceImport(models.TransientModel):
                 taxes = bdio._match_taxes(
                     line.get("taxes"),
                     parsed_inv["chatter_msg"],
-                    company=import_config["company"],
                     type_tax_use=type_tax_use,
                     raise_exception=False,
                 )
@@ -497,7 +489,7 @@ class AccountInvoiceImport(models.TransientModel):
     def _set_previous_invoice(self, parsed_inv, import_config, partner):
         if not import_config.get("previous_invoice"):
             domain = [
-                ("company_id", "=", import_config["company"].id),
+                ("company_id", "=", self.env.company.id),
                 ("commercial_partner_id", "=", partner.id),
                 ("state", "=", "posted"),
             ]
@@ -534,11 +526,9 @@ class AccountInvoiceImport(models.TransientModel):
         # set import_config['start_end_dates_installed']
         if not import_config.get("taxes"):
             if parsed_inv["type"] in ("out_invoice", "out_refund"):
-                import_config["taxes"] = import_config["company"].account_sale_tax_id
+                import_config["taxes"] = self.env.company.account_sale_tax_id
             else:
-                import_config["taxes"] = import_config[
-                    "company"
-                ].account_purchase_tax_id
+                import_config["taxes"] = self.env.company.account_purchase_tax_id
         if not import_config.get("account"):
             journal = self.env["account.journal"].browse(vals["journal_id"])
             import_config["account"] = journal.default_account_id
@@ -547,10 +537,6 @@ class AccountInvoiceImport(models.TransientModel):
             import_config["account"] = pcateg_obj._fields[
                 "property_account_expense_categ_id"
             ].get_company_dependent_fallback(pcateg_obj)
-        if import_config.get("product"):
-            import_config["product"] = import_config["product"].with_company(
-                import_config["company"].id
-            )
         # Cleanup data
         if import_config["taxes"]:
             if parsed_inv["type"] in ("out_invoice", "out_refund"):
@@ -558,8 +544,7 @@ class AccountInvoiceImport(models.TransientModel):
             else:
                 type_tax_use = "purchase"
             import_config["taxes"] = import_config["taxes"].filtered(
-                lambda x: x.company_id.id == import_config["company"].id
-                and x.type_tax_use == type_tax_use
+                lambda x: x.type_tax_use == type_tax_use
             )
         if (
             import_config["account"]
@@ -577,9 +562,7 @@ class AccountInvoiceImport(models.TransientModel):
         )
 
     @api.model
-    def parse_invoice(
-        self, invoice_file_b64, invoice_filename, company, email_from=None
-    ):
+    def parse_invoice(self, invoice_file_b64, invoice_filename, email_from=None):
         assert invoice_file_b64, "No invoice file"
         assert isinstance(invoice_file_b64, bytes)
         logger.info("Starting to import invoice %s", invoice_filename)
@@ -603,7 +586,7 @@ class AccountInvoiceImport(models.TransientModel):
             )
             logger.debug("Starting to import the following XML file:")
             logger.debug(pretty_xml_bytes.decode("utf-8"))
-            parsed_inv = self.parse_xml_invoice(xml_root, company)
+            parsed_inv = self.parse_xml_invoice(xml_root)
             if parsed_inv is False:
                 raise UserError(
                     _(
@@ -615,7 +598,7 @@ class AccountInvoiceImport(models.TransientModel):
                 )
         # Fallback on PDF
         else:
-            parsed_inv = self.parse_pdf_invoice(file_data, company)
+            parsed_inv = self.parse_pdf_invoice(file_data)
         if "attachments" not in parsed_inv:
             parsed_inv["attachments"] = {}
         parsed_inv["attachments"][invoice_filename] = invoice_file_b64
@@ -770,15 +753,14 @@ class AccountInvoiceImport(models.TransientModel):
     def import_invoices(self):
         """Method called by the button of the wizard"""
         self.ensure_one()
-        company = self.company_id
+        self = self.with_company(self.company_id)
         if not self.invoice_attachment_ids:
             raise UserError(_("You must select the vendor bills to import."))
 
         invoice_ids = []
         warnings = []
         for attach in self.invoice_attachment_ids:
-            parsed_inv = self.parse_invoice(attach.datas, attach.name, company)
-            import_config = {"company": company}
+            parsed_inv = self.parse_invoice(attach.datas, attach.name)
             if parsed_inv.get("partner"):
                 partner = self.env["business.document.import"]._match_partner(
                     parsed_inv["partner"],
@@ -789,7 +771,7 @@ class AccountInvoiceImport(models.TransientModel):
                     # To speed-up next match
                     parsed_inv["partner"] = {"recordset": partner}
                     existing_inv = self._invoice_already_exists(
-                        parsed_inv, partner.commercial_partner_id, company.id
+                        parsed_inv, partner.commercial_partner_id
                     )
                     if existing_inv:
                         logger.warning(
@@ -809,7 +791,7 @@ class AccountInvoiceImport(models.TransientModel):
                         )
                         continue
 
-                    import_config = partner._convert_to_import_config(company)
+                    import_config = partner._convert_to_import_config()
             invoice = self.create_invoice(
                 parsed_inv,
                 import_config,
@@ -882,7 +864,6 @@ class AccountInvoiceImport(models.TransientModel):
         self,
         invoice_file_b64,
         invoice_filename,
-        company_id,
         origin,
         email_from=None,
     ):
@@ -893,22 +874,21 @@ class AccountInvoiceImport(models.TransientModel):
             invoice_file_b64 = invoice_file_b64.encode("utf8")
         assert isinstance(invoice_file_b64, bytes)
         assert isinstance(invoice_filename, str)
-        if company_id is None:
-            company = self.env.company
-            company_id = company.id
-        else:
-            company = self.env["res.company"].browse(company_id)
+        self.create(
+            {"company_id": self.env.company.id},
+        )
         logger.info(
             "Starting to import invoice file %s in company ID %d",
             invoice_filename,
-            company_id,
+            self.env.company.id,
         )
         parsed_inv = self.parse_invoice(
-            invoice_file_b64, invoice_filename, company, email_from=email_from
+            invoice_file_b64, invoice_filename, email_from=email_from
         )
         partner = self.env["business.document.import"]._match_partner(
             parsed_inv["partner"], parsed_inv["chatter_msg"], raise_exception=False
         )
+        import_config = {}
         if partner:
             partner = partner.commercial_partner_id
             # To avoid a second full _match_partner() inside create_invoice()
@@ -923,9 +903,7 @@ class AccountInvoiceImport(models.TransientModel):
                     parsed_inv.get("invoice_number"),
                 )
                 return False
-            import_config = partner._convert_to_import_config(company)
-        else:
-            import_config = {"company": company}
+            import_config = partner._convert_to_import_config()
         invoice = self.create_invoice(parsed_inv, import_config, origin)
         return invoice.id
 
@@ -1210,7 +1188,7 @@ class AccountInvoiceImport(models.TransientModel):
                     "No destination found for message_id = %s.",
                     msg_dict["message_id"],
                 )
-                return self.create({})
+                return self.browse()
         else:  # mono-company setup
             company_id = all_companies[0]["id"]
 
@@ -1256,7 +1234,6 @@ class AccountInvoiceImport(models.TransientModel):
                     invoice_id = self.create_invoice_webservice(
                         base64.b64encode(attach_bytes),
                         filename,
-                        company_id,
                         origin,
                         email_from=msg_dict.get("email_from"),
                     )

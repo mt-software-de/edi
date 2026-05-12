@@ -61,13 +61,9 @@ class ResPartner(models.Model):
         related="invoice_import_move_id.partner_id"
     )
 
-    def _convert_to_import_config(self, company):
+    def _convert_to_import_config(self):
         self.ensure_one()
-        if not company:
-            company = self.env.company
-        self = self.with_company(company.id)
         vals = {
-            "company": company,
             "single_line": self.invoice_import_single_line,
             "label": self.invoice_import_label or False,
             "journal": self.invoice_import_journal_id or False,
@@ -75,19 +71,10 @@ class ResPartner(models.Model):
         if self.invoice_import_product_id:
             vals["product"] = self.invoice_import_product_id
         else:
-            taxes = (
-                self.invoice_import_tax_ids
-                and self.invoice_import_tax_ids.filtered(
-                    lambda tax: tax.company_id == company
-                )
-                or False
-            )
+            taxes = self.invoice_import_tax_ids
             if taxes:
                 vals["taxes"] = taxes
-            if (
-                self.invoice_import_account_id
-                and company in self.invoice_import_account_id.company_ids
-            ):
+            if self.invoice_import_account_id:
                 vals["account"] = self.invoice_import_account_id
         return vals
 
